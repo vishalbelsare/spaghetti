@@ -19,7 +19,7 @@
      strategy:
        matrix:
          os: ['ubuntu-latest']
-         environment-file: [ci/39.yaml]
+         environment-file: [ci/312-latest.yaml]
          experimental: [false]
      defaults:
        run:
@@ -27,16 +27,24 @@
      
      steps:
        - name: checkout repo
-         uses: actions/checkout@v3
+         uses: actions/checkout@v4
+         with:
+          fetch-depth: 0 # Fetch all history for all branches and tags.
        
        - name: setup micromamba
-         uses: mamba-org/provision-with-micromamba@main
+         uses: mamba-org/setup-micromamba@v2
          with:
            environment-file: ${{ matrix.environment-file }}
            micromamba-version: 'latest'
        
+       - name: reinstall for version
+         run: |
+           pip install -e . --no-deps --force-reinstall
+
        - name: make docs
-         run: cd docs; make html
+         run: |
+           cd docs
+           make html
        
        - name: commit docs
          run: |

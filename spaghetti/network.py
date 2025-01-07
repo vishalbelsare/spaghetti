@@ -1,21 +1,26 @@
-from collections import defaultdict, OrderedDict
+# ruff: noqa: B009
+
+import contextlib
+import copy
+import os
+import pickle
+import warnings
+from collections import OrderedDict, defaultdict
 from itertools import islice
-import copy, os, pickle, warnings
 
 import esda
 import numpy
+from libpysal import cg, weights
 
-from .analysis import GlobalAutoK
 from . import util
-from libpysal import cg, examples, weights
-from libpysal.common import requires
+from .analysis import GlobalAutoK
 
 try:
-    from libpysal import open
+    from libpysal import open as _open
 except ImportError:
     import libpysal
 
-    open = libpysal.io.open
+    _open = libpysal.io.open
 
 
 __all__ = ["Network", "PointPattern", "GlobalAutoK"]
@@ -32,8 +37,8 @@ dep_msg = (
     "requiring network and point pattern input as ``libpysal.cg`` "
     "geometries should prepare for this simply by converting "
     "to ``shapely`` geometries."
-    )
-warnings.warn(f"{dep_msg}", FutureWarning)
+)
+warnings.warn(dep_msg, FutureWarning, stacklevel=1)
 
 
 class Network:
@@ -45,7 +50,7 @@ class Network:
 
     Parameters
     ----------
-    in_data : {str, iterable (list, tuple, numpy.ndarray), libpysal.cg.Chain, geopandas.GeoDataFrame}
+    in_data : {str, iterable, libpysal.cg.Chain, geopandas.GeoDataFrame}
         The input geographic data. Either (1) a path to a shapefile
         (str); (2) an iterable containing ``libpysal.cg.Chain``
         objects; (3) a single ``libpysal.cg.Chain``; or
@@ -69,7 +74,7 @@ class Network:
         ``True`` flags ``self.arc_lengths`` as the weightings,
         ``False`` sets no weightings. Default is ``False``.
     weights_kws : dict
-        Keyword arguments for ``libpysal.weights.W``.
+        Keyword arguments for ``libpysal.weights.W``. Default is ``dict()``.
     vertex_atol : {int, None}
         Precision for vertex absolute tolerance. Round vertex coordinates to
         ``vertex_atol`` decimal places. Default is ``None``. **ONLY** change
@@ -188,7 +193,7 @@ class Network:
     network structure will generally have (1) more vertices and links than may expected,
     and, (2) many degree-2 vertices, which differs from a truly graph-theoretic object.
     This is demonstrated in the
-    `Caveats Tutorial <https://pysal.org/spaghetti/notebooks/caveats.html#4.-Understanding-network-generation>`_.
+    `Caveats Tutorial <https://pysal.org/spaghetti/notebooks/caveats.html>`_.
 
     See :cite:`Cliff1981`, :cite:`Tansel1983a`,
     :cite:`AhujaRavindraK`, :cite:`Labbe1995`,
@@ -222,12 +227,12 @@ class Network:
 
     >>> import numpy
     >>> list(numpy.unique(ntw.network_component_labels))
-    [0]
+    [np.int32(0)]
 
     Show whether each component of the network is an isolated ring (or not).
 
     >>> ntw.network_component_is_ring
-    {0: False}
+    {np.int32(0): False}
 
     Show how many network arcs are associated with the component.
 
@@ -241,9 +246,9 @@ class Network:
     >>> ntw.graph_n_components
     1
     >>> list(numpy.unique(ntw.graph_component_labels))
-    [0]
+    [np.int32(0)]
     >>> ntw.graph_component_is_ring
-    {0: False}
+    {np.int32(0): False}
     >>> edges = len(ntw.graph_component2edge[ntw.graph_component_labels[0]])
     >>> edges
     179
@@ -279,15 +284,13 @@ class Network:
         extractgraph=True,
         w_components=True,
         weightings=False,
-        weights_kws=dict(),
+        weights_kws=dict(),  # noqa: B006, C408
         vertex_atol=None,
     ):
-
         # do this when creating a clean network instance from a
         # shapefile or a geopandas.GeoDataFrame, otherwise a shell
         # network instance is created (see `split_arcs()` method)
         if in_data is not None:
-
             # set parameters as attributes
             self.in_data = in_data
             self.vertex_sig = vertex_sig
@@ -307,14 +310,14 @@ class Network:
             # spatial representation of the network
             self._extractnetwork()
             self.arcs = sorted(self.arcs)
-            self.vertex_coords = dict((v, k) for k, v in self.vertices.items())
+            self.vertex_coords = {v: k for k, v in self.vertices.items()}
 
             # extract connected components
             if w_components:
                 as_graph = False
                 network_weightings = False
 
-                if weightings == True:
+                if weightings:
                     # set network arc weights to length if weights are
                     # desired, but no other input in given
                     weightings = self.arc_lengths
@@ -417,13 +420,10 @@ class Network:
         component_labels = w.component_labels
 
         # is the network a single, fully-connected component?
-        if n_components == 1:
-            fully_connected = True
-        else:
-            fully_connected = False
+        fully_connected = bool(n_components == 1)
 
         # link to component lookup
-        link2component = dict(zip(links, component_labels))
+        link2component = dict(zip(links, component_labels, strict=True))
 
         # component ID lookups: links, lengths, vertices, vertex counts
         component2link = {}
@@ -437,7 +437,7 @@ class Network:
             c2l_ = component2link[cpl]
             arclens_ = self.arc_lengths.items()
             component_lengths[cpl] = sum([v for k, v in arclens_ if k in c2l_])
-            component_vertices[cpl] = list(set([v for l in c2l_ for v in l]))
+            component_vertices[cpl] = {v for link in c2l_ for v in link}
             component_vertex_count[cpl] = len(component_vertices[cpl])
 
         # longest and largest components
@@ -454,10 +454,7 @@ class Network:
                 component_is_ring[comp] = True
 
         # attribute label name depends on object type
-        if graph:
-            c2l_attr_name = "component2edge"
-        else:
-            c2l_attr_name = "component2arc"
+        c2l_attr_name = "component2edge" if graph else "component2arc"
 
         # set all new variables into list
         extracted_attrs = [
@@ -475,7 +472,7 @@ class Network:
 
         # iterate over list and set attribute with
         # either "network" or "graph" extension
-        for (attr_str, attr) in extracted_attrs:
+        for attr_str, attr in extracted_attrs:
             setattr(self, obj_type + attr_str, attr)
 
     def _extractnetwork(self):
@@ -489,29 +486,28 @@ class Network:
         is_libpysal_chains = False
         supported_iterables = ["list", "tuple", "numpy.ndarray"]
         # type error message
-        msg = "'%s' not supported for network instantiation."
+        msg = "'{}' not supported for network instantiation."
 
         # set appropriate geometries
         if in_dtype == "str":
-            shps = open(self.in_data)
+            shps = _open(self.in_data)
         elif in_dtype in supported_iterables:
             shps = self.in_data
             shp_type = str(type(shps[0])).split("'")[1]
             if shp_type == "libpysal.cg.shapes.Chain":
                 is_libpysal_chains = True
             else:
-                raise TypeError(msg % shp_type)
+                raise TypeError(msg.format(shp_type))
         elif in_dtype == "libpysal.cg.shapes.Chain":
             shps = [self.in_data]
             is_libpysal_chains = True
         elif in_dtype == "geopandas.geodataframe.GeoDataFrame":
             shps = self.in_data.geometry
         else:
-            raise TypeError(msg % in_dtype)
+            raise TypeError(msg.format(in_dtype))
 
         # iterate over each record of the network lines
         for shp in shps:
-
             # if the segments are native pysal geometries
             if is_libpysal_chains:
                 vertices = shp.vertices
@@ -523,7 +519,6 @@ class Network:
 
             # iterate over each vertex (v)
             for i, v in enumerate(vertices[:-1]):
-
                 # -- For vertex 1
                 # adjust precision -- this was originally
                 # implemented to handle high-precision
@@ -606,7 +601,6 @@ class Network:
         # iterate over all vertices that are not contained within
         # isolated loops that have a degree of 2
         for s in non_articulation_points:
-
             # initialize bridge with an articulation point
             bridge = [s]
 
@@ -614,7 +608,6 @@ class Network:
             # that are also degree 2
             neighbors = self._yieldneighbor(s, non_articulation_points, bridge)
             while neighbors:
-
                 # extract the current node in `neighbors`
                 cnode = neighbors.pop()
                 # remove it from `non_articulation_points`
@@ -635,11 +628,9 @@ class Network:
 
         # iterate over the list of newly created rooted bridges
         for bridge in bridge_roots:
-
             # if the vertex is only one non-articulation
             # point in the bridge
             if len(bridge) == 1:
-
                 # that the singular element of the bridge
                 n = self.adjacencylist[bridge[0]]
                 # and create a new graph edge from it
@@ -674,7 +665,7 @@ class Network:
                 start_end = {}
 
                 # initialize a redundant set of bridge edges
-                redundant = set([])
+                redundant = set()
 
                 # iterate over the current bridge
                 for b in bridge:
@@ -733,10 +724,8 @@ class Network:
         unvisted = set(self.vertices.values())
 
         while unvisted:
-
             # iterate over each component
             for component_id, ring in self.network_component_is_ring.items():
-
                 # evaluate for non-articulation points
                 napts, unvisted = self._evaluate_napts(
                     napts, unvisted, component_id, ring
@@ -778,24 +767,19 @@ class Network:
 
         # iterate over each `edge` of the `component`
         for component in self.network_component2arc[component_id]:
-
             # each `component` has two vertices
             for vertex in component:
-
                 # if `component` is not an isolated island
                 # and `vertex` has exactly 2 neighbors,
                 # add `vertex` to `napts`
-                if not ring:
-                    if len(self.adjacencylist[vertex]) == 2:
-                        napts.add(vertex)
+                if not ring and len(self.adjacencylist[vertex]) == 2:
+                    napts.add(vertex)
 
                 # remove `vertex` from `unvisited` if
                 # it is still in the set else move along to
                 # the next iteration
-                try:
+                with contextlib.suppress(KeyError):
                     unvisited.remove(vertex)
-                except KeyError:
-                    pass
 
         return napts, unvisited
 
@@ -829,14 +813,17 @@ class Network:
         # get all nodes adjacent to `vtx` that are not in the
         # set of 'bridge' vertices
         for i in self.adjacencylist[vtx]:
-
             if i in arc_vertices and i not in bridge:
                 nodes.append(i)
 
         return nodes
 
     def contiguityweights(
-        self, graph=True, weightings=None, from_split=False, weights_kws=dict()
+        self,
+        graph=True,
+        weightings=None,
+        from_split=False,
+        weights_kws=dict(),  # noqa: B006, C408
     ):
         """Create a contiguity-based ``libpysal.weights.W`` object.
 
@@ -852,7 +839,7 @@ class Network:
             Flag for whether the method is being called from within
             ``split_arcs()`` (``True``) or not (``False``). Default is ``False``.
         weights_kws : dict
-            Keyword arguments for ``libpysal.weights.W``.
+            Keyword arguments for ``libpysal.weights.W``. Default is ``dict()``.
 
         Returns
         -------
@@ -907,26 +894,18 @@ class Network:
         neighbors = OrderedDict()
 
         # flag network (arcs) or graph (edges)
-        if graph:
-            links = self.edges
-        else:
-            links = self.arcs
+        links = self.edges if graph else self.arcs
 
         # if weightings are desired instantiate a dictionary
         # other ignore weightings
-        if weightings:
-            _weights = {}
-        else:
-            _weights = None
+        _weights = {} if weightings else None
 
         # iterate over all links until all possibilities
         # for network link adjacency are exhausted
         working = True
         while working:
-
             # for each network link (1)
             for key in links:
-
                 # instantiate a slot in the OrderedDict
                 neighbors[key] = []
 
@@ -968,7 +947,13 @@ class Network:
 
         return w
 
-    def distancebandweights(self, threshold, n_processes=1, gen_tree=False):
+    def distancebandweights(
+        self,
+        threshold,
+        n_processes=1,
+        gen_tree=False,
+        weights_kws=dict(),  # noqa: B006, C408
+    ):
         """Create distance-based weights.
 
         Parameters
@@ -982,6 +967,8 @@ class Network:
         gen_tree : bool
             Rebuild shortest path with ``True``, or skip with ``False``.
             Default is ``False``.
+        weights_kws : dict
+            Keyword arguments for ``libpysal.weights.W``. Default is ``dict()``.
 
         Returns
         -------
@@ -1007,23 +994,31 @@ class Network:
 
         >>> import spaghetti
         >>> from libpysal import examples
+        >>> import warnings
         >>> streets_file = examples.get_path("streets.shp")
         >>> ntw = spaghetti.Network(in_data=streets_file)
 
         Create a contiguity-based ``W`` object based on network distance, ``500``
-        `US feet in this case <https://github.com/pysal/libpysal/blob/master/libpysal/examples/geodanet/streets.prj>`_.
+        US feet in this case.
 
-        >>> w = ntw.distancebandweights(threshold=500)
+        >>> w = ntw.distancebandweights(
+        ...     threshold=500, weights_kws=dict(silence_warnings=True)
+        ... )
 
         Show the number of units in the ``W`` object.
 
         >>> w.n
         230
 
+        There are 7 components in the ``W`` object.
+
+        >>> w.n_components
+        7
+
         There are ``8`` units with ``3`` neighbors in the ``W`` object.
 
         >>> w.histogram[-1]
-        (8, 3)
+        (np.int64(8), np.int64(3))
 
         """
 
@@ -1050,7 +1045,7 @@ class Network:
                 neighbors[n].append(neigh)
 
         # call libpysal for `W` instance
-        w = weights.W(neighbors)
+        w = weights.W(neighbors, **weights_kws)
 
         return w
 
@@ -1146,7 +1141,7 @@ class Network:
         distance from the original location to the snapped location.
 
         Parameters
-        -----------
+        ----------
         pattern : spaghetti.PointPattern
             The point pattern object.
         idx : int
@@ -1176,7 +1171,7 @@ class Network:
         """Used internally to snap point observations to network arcs.
 
         Parameters
-        -----------
+        ----------
         pointpattern : spaghetti.PointPattern
             The point pattern object.
 
@@ -1207,7 +1202,6 @@ class Network:
 
         # iterate over network arc IDs
         for arc in self.arcs:
-
             # record the start and end of the arc
             head = self.vertex_coords[arc[0]]
             tail = self.vertex_coords[arc[1]]
@@ -1235,7 +1229,6 @@ class Network:
         # record obs_to_arc, dist_to_vertex, and dist_snapped
         # -- iterate over the snapped observation points
         for point_idx, snap_info in snapped.items():
-
             # fetch the x and y coordinate
             x, y = snap_info[1].tolist()
 
@@ -1269,7 +1262,6 @@ class Network:
 
         # iterate over the observations to arcs lookup
         for k, v in obs_to_arc.items():
-
             # record the left and right vertex ids
             keys = v.keys()
             obs_to_vertex[k[0]] = keys
@@ -1341,15 +1333,13 @@ class Network:
 
         # graph-theoretic object of nodes and edges
         if graph:
-
             # iterate the links-to-observations lookup
             for key, observations in obs_on.items():
-
                 # isolate observation count for the link
                 cnt = len(observations)
 
                 # extract link (edges) key
-                if key in self.arcs_to_edges.keys():
+                if key in self.arcs_to_edges:
                     key = self.arcs_to_edges[key]
 
                 # either add to current count or a dictionary
@@ -1361,9 +1351,8 @@ class Network:
 
         # network object of arcs and vertices
         else:
-
             # simplified version of the above process
-            for key in obs_on.keys():
+            for key in obs_on:
                 counts[key] = len(obs_on[key])
 
         return counts
@@ -1409,12 +1398,12 @@ class Network:
         # if the horizontal direction is negative from
         # vertex 1 to vertex 2 on the euclidean plane
         if x1 > x2:
-            x0 = x1 - distance / numpy.sqrt(1 + m ** 2)
+            x0 = x1 - distance / numpy.sqrt(1 + m**2)
 
         # if the horizontal direction is positive from
         # vertex 1 to vertex 2 on the euclidean plane
         elif x1 < x2:
-            x0 = x1 + distance / numpy.sqrt(1 + m ** 2)
+            x0 = x1 + distance / numpy.sqrt(1 + m**2)
 
         # calculate the (y) coordinate
         y0 = m * (x0 - x1) + y1
@@ -1495,12 +1484,10 @@ class Network:
         if distribution.lower() == "uniform":
             nrandompts = numpy.random.uniform(0, cumlen, size=(count,))
         else:
-            msg = "%s distribution not currently supported." % distribution
-            raise RuntimeError(msg)
+            raise RuntimeError(f"{distribution} distribution not currently supported.")
 
         # iterate over random distances created above
         for i, r in enumerate(nrandompts):
-
             # take the first element of the index array (arc ID) where the
             # random distance is greater than that of its value in `stops`
             idx = numpy.where(r < stops)[0][0]
@@ -1538,7 +1525,7 @@ class Network:
         """Returns the arcs (links) adjacent to vertices.
 
         Parameters
-        -----------
+        ----------
         v0 : int
             The vertex ID.
 
@@ -1580,7 +1567,7 @@ class Network:
         ``nearestneighbordistances()``, and ``distancebandweights()``.
 
         Parameters
-        -----------
+        ----------
         n_processes : int
             Specify the number of cores to utilize. Default is 1 core.
             Use ``"all"`` to request all available cores.
@@ -1606,20 +1593,15 @@ class Network:
 
         # single-core processing
         if n_processes == 1:
-
             # iterate over each network vertex
             for vtx in self.vertex_list:
-
                 # calculate the shortest path and preceding
                 # vertices for traversal route
                 distance, pred = util.dijkstra(self, vtx)
                 pred = numpy.array(pred)
 
                 # generate the shortest path tree
-                if gen_tree:
-                    tree = util.generatetree(pred)
-                else:
-                    tree = None
+                tree = util.generatetree(pred) if gen_tree else None
 
                 # populate distances and paths
                 self.distance_matrix[vtx] = distance
@@ -1627,41 +1609,36 @@ class Network:
 
         # multiprocessing
         else:
-
             # set up multiprocessing schema
             import multiprocessing as mp
             from itertools import repeat
 
-            if n_processes == "all":
-                cores = mp.cpu_count()
-            else:
-                cores = n_processes
-            p = mp.Pool(processes=cores)
+            cores = mp.cpu_count() if n_processes == "all" else n_processes
 
-            # calculate the shortest path and preceding
-            # vertices for traversal route by mapping each process
-            distance_pred = p.map(util.dijkstra_mp, zip(repeat(self), self.vertex_list))
+            with mp.Pool(processes=cores) as p:
+                # calculate the shortest path and preceding
+                # vertices for traversal route by mapping each process
+                distance_pred = p.map(
+                    util.dijkstra_mp, zip(repeat(self), self.vertex_list)
+                )
 
-            # set range of iterations
-            iterations = range(len(distance_pred))
+                # set range of iterations
+                iterations = range(len(distance_pred))
 
-            # fill shortest paths
-            distance = [distance_pred[itr][0] for itr in iterations]
+                # fill shortest paths
+                distance = [distance_pred[itr][0] for itr in iterations]
 
-            # fill preceding vertices
-            pred = numpy.array([distance_pred[itr][1] for itr in iterations])
+                # fill preceding vertices
+                pred = numpy.array([distance_pred[itr][1] for itr in iterations])
 
-            # iterate of network vertices and generate
-            # the shortest path tree for each
-            for vtx in self.vertex_list:
-                if gen_tree:
-                    tree = util.generatetree(pred[vtx])
-                else:
-                    tree = None
+                # iterate of network vertices and generate
+                # the shortest path tree for each
+                for vtx in self.vertex_list:
+                    tree = util.generatetree(pred[vtx]) if gen_tree else None
 
-                # populate distances and paths
-                self.distance_matrix[vtx] = distance[vtx]
-                self.network_trees[vtx] = tree
+                    # populate distances and paths
+                    self.distance_matrix[vtx] = distance[vtx]
+                    self.network_trees[vtx] = tree
 
     def allneighbordistances(
         self,
@@ -1741,7 +1718,7 @@ class Network:
         the distance between one observation and another will be positive value.
 
         >>> s2s_dist[0,0], s2s_dist[1,0]
-        (nan, 3105.189475447081)
+        (np.float64(nan), np.float64(3105.189475447081))
 
         If calculating a ``type-a`` to ``type-b`` distance matrix
         the distance between all observations will likely be positive
@@ -1774,7 +1751,7 @@ class Network:
             self.full_distance_matrix(n_processes, gen_tree=gen_tree)
 
         # set the source and destination observation point patterns
-        if type(sourcepattern) is str:
+        if isinstance(sourcepattern, str):
             sourcepattern = self.pointpatterns[sourcepattern]
             if destpattern:
                 destpattern = self.pointpatterns[destpattern]
@@ -1800,7 +1777,7 @@ class Network:
             symmetric = True
             destpattern = sourcepattern
         # set local copy of destination pattern index
-        dest_indices = list(destpattern.points.keys())
+        dest_indices = list(destpattern.points)
         # set local copy of destination distance to vertex lookup
         dst_d2v = copy.deepcopy(destpattern.dist_to_vertex)
         # destination point count
@@ -1838,7 +1815,6 @@ class Network:
 
         # iterate over each point in sources
         for p1 in src_indices:
-
             # get the source vertices and dist to source vertices
             source1, source2 = src_vertices[p1]
             set1 = set(src_vertices[p1])
@@ -1848,13 +1824,11 @@ class Network:
             sdist1, sdist2 = src_d2v[p1].values()
 
             if symmetric:
-
                 # only compute the upper triangle if symmetric
                 dest_searchpts.remove(p1)
 
             # iterate over each point remaining in destinations
             for p2 in dest_searchpts:
-
                 # get the destination vertices and
                 # dist to destination vertices
                 dest1, dest2 = dest_vertices[p2]
@@ -1862,7 +1836,6 @@ class Network:
 
                 # when the observations are snapped to the same arc
                 if set1 == set2:
-
                     # calculate only the length between points along
                     # that arc
                     x1, y1 = sourcepattern.snapped_coordinates[p1]
@@ -1879,7 +1852,6 @@ class Network:
                 # otherwise lookup distance between the source and
                 # destination vertex
                 else:
-
                     # distance from destination vertex1 to point and
                     # distance from destination vertex2 to point
                     ddist1, ddist2 = dst_d2v[p2].values()
@@ -1928,14 +1900,12 @@ class Network:
                     tree_nearest[p1, p2] = (s_vertex, d_vertex)
 
                 if symmetric:
-
                     # mirror the upper and lower triangle
                     # when symmetric
                     nearest[p2, p1] = nearest[p1, p2]
 
         # populate the main diagonal when symmetric
         if symmetric:
-
             # fill the matrix diagonal with NaN values is no fill
             # value is specified
             if fill_diagonal is None:
@@ -2023,7 +1993,8 @@ class Network:
 
         >>> nn = ntw.nearestneighbordistances("crimes", keep_zero_dist=True)
         >>> nn[11], nn[18]
-        (([18, 19], 165.33982412719126), ([19], 0.0))
+        (([18, 19], np.float64(165.33982412719126)), ([19], np.float64(0.0)))
+
 
         This may be remedied by setting the ``keep_zero_dist`` keyword
         argument to ``False``. With this parameter set, observation ``11``
@@ -2033,18 +2004,17 @@ class Network:
 
         >>> nn = ntw.nearestneighbordistances("crimes", keep_zero_dist=False)
         >>> nn[11], nn[18]
-        (([18, 19], 165.33982412719126), ([11], 165.33982412719126))
+        (([18, 19], np.float64(165.33982412719126)), ([11], np.float64(165.33982412719126)))
 
         There are valid reasons for both retaining or masking zero distance
         neighbors. When conducting analysis, thought must be given as to
         which model more accurately represents the specific scenario.
 
-        """
+        """  # noqa: E501
 
         # raise exception is the specified point pattern does not exist
-        if sourcepattern not in self.pointpatterns.keys():
-            err_msg = "Available point patterns are {}"
-            raise KeyError(err_msg.format(self.pointpatterns.keys()))
+        if sourcepattern not in self.pointpatterns:
+            raise KeyError(f"Available point patterns are {self.pointpatterns.keys()}")
 
         # calculate the network vertex to vertex distance matrix
         # if it is not already an attribute
@@ -2087,8 +2057,7 @@ class Network:
         nearest = {}
 
         # iterate over each source point
-        for source_index in sourcepattern.points.keys():
-
+        for source_index in sourcepattern.points:
             # this considers all zero-distance neighbors
             if keep_zero_dist and symmetric:
                 val = numpy.nanmin(all_dists[source_index, :])
@@ -2110,7 +2079,7 @@ class Network:
 
         return nearest
 
-    def shortest_paths(self, tree, pp_orig, pp_dest=None, n_processes=1):
+    def shortest_paths(self, tree, pp_orig, pp_dest=None):
         """Return the shortest paths between observation points as
         ``libpysal.cg.Chain`` objects.
 
@@ -2126,8 +2095,6 @@ class Network:
             Destination point pattern for shortest paths.
             See ``name`` in ``spaghetti.Network.snapobservations()``.
             Defaults ``pp_orig`` if not declared.
-        n_processes : int
-            See ``n_processes`` in ``spaghetti.Network.full_distance_matrix()``.
 
         Returns
         -------
@@ -2183,17 +2150,16 @@ class Network:
 
         # build the network trees object if it is not already an attribute
         if not hasattr(self, "network_trees"):
-            msg = "The 'network_trees' attribute has not been created. "
-            msg += "Rerun 'spaghetti.Network.allneighbordistances()' "
-            msg += "with the 'gen_tree' parameter set to 'True'."
+            msg = (
+                "The 'network_trees' attribute has not been created. "
+                "Rerun 'spaghetti.Network.allneighbordistances()' "
+                "with the 'gen_tree' parameter set to 'True'."
+            )
             raise AttributeError(msg)
 
         # isolate network attributes
         pp_orig = self.pointpatterns[pp_orig]
-        if pp_dest:
-            pp_dest = self.pointpatterns[pp_dest]
-        else:
-            pp_dest = pp_orig
+        pp_dest = self.pointpatterns[pp_dest] if pp_dest else pp_orig
         vtx_coords = self.vertex_coords
         net_trees = self.network_trees
 
@@ -2202,7 +2168,6 @@ class Network:
 
         # iterate over each path in the tree
         for idx, ((obs0, obs1), (v0, v1)) in enumerate(tree.items()):
-
             # if the observations share the same segment
             # create a partial segment path
             if (v0, v1) == SAME_SEGMENT:
@@ -2261,11 +2226,17 @@ class Network:
 
         return paths
 
-    def split_arcs(self, split_param, split_by="distance", w_components=True):
+    def split_arcs(
+        self,
+        split_param,
+        split_by="distance",
+        w_components=True,
+        weights_kws=dict(),  # noqa: B006, C408
+    ):
         """Split all network arcs at either a fixed distance or fixed count.
 
         Parameters
-        -----------
+        ----------
         split_param : {int, float}
             Either the number of desired resultant split arcs or
             the distance at which arcs are split.
@@ -2274,6 +2245,8 @@ class Network:
         w_components : bool
             Set to ``False`` to not record connected components from a
             ``libpysal.weights.W`` object. Default is ``True``.
+        weights_kws : dict
+            Keyword arguments for ``libpysal.weights.W``. Default is ``dict()``.
 
         Returns
         -------
@@ -2290,7 +2263,7 @@ class Network:
         >>> ntw = spaghetti.Network(examples.get_path("streets.shp"))
 
         Split the network into a segments of 200 distance units in length
-        (`US feet in this case <https://github.com/pysal/libpysal/blob/master/libpysal/examples/geodanet/streets.prj>`_.).
+        (US feet in this case).
         This will include "remainder" segments unless the network is
         comprised of arcs with lengths exactly divisible by ``distance``.
 
@@ -2319,29 +2292,37 @@ class Network:
 
         """
 
+        def int_coord(c):
+            """convert coordinates for integers if possible
+            e.g., (1.0, 0.5) --> (1, 0.5)
+            """
+            return int(c) if (isinstance(c, float) and c.is_integer()) else c
+
         # catch invalid split types
-        split_by = split_by.lower()
+        _split_by = split_by.lower()
         valid_split_types = ["distance", "count"]
-        if split_by not in valid_split_types:
-            msg = f"'{split_by}' is not a valid value for 'split_by'. "
-            msg += f"Valid arguments include: {valid_split_types}."
+        if _split_by not in valid_split_types:
+            msg = (
+                f"'{split_by}' is not a valid value for 'split_by'. "
+                f"Valid arguments include: {valid_split_types}."
+            )
             raise ValueError(msg)
 
         # catch invalid count params
-        if split_by == "count":
+        if _split_by == "count":
             if split_param <= 1:
-                msg = "Splitting arcs by 1 or less is not possible. "
-                msg += f"Currently 'split_param' is set to {split_param}."
+                msg = (
+                    "Splitting arcs by 1 or less is not possible. "
+                    f"Currently 'split_param' is set to {split_param}."
+                )
                 raise ValueError(msg)
             split_integer = int(split_param)
             if split_param != split_integer:
-                msg = "Network arcs must split by an integer. "
-                msg += f"Currently 'split_param' is set to {split_param}."
+                msg = (
+                    "Network arcs must split by an integer. "
+                    f"Currently 'split_param' is set to {split_param}."
+                )
                 raise TypeError(msg)
-
-        # convert coordinates for integers if possible
-        # e.g., (1.0, 0.5) --> (1, 0.5)
-        int_coord = lambda c: int(c) if (type(c) == float and c.is_integer()) else c
 
         # create new shell network instance
         split_network = Network()
@@ -2366,12 +2347,11 @@ class Network:
 
         # iterate over all network arcs
         for arc in split_network.arcs:
-
             # fetch network arc length
             length = split_network.arc_lengths[arc]
 
             # set initial segmentation interval
-            if split_by == "distance":
+            if _split_by == "distance":
                 interval = split_param
             else:
                 interval = length / float(split_param)
@@ -2391,7 +2371,6 @@ class Network:
             # if the arc will be split remove the current
             # arc from the adjacency list
             if interval < length:
-
                 # remove old arc adjacency information
                 split_network.adjacencylist[currentstart].remove(end_vertex)
                 split_network.adjacencylist[end_vertex].remove(currentstart)
@@ -2408,7 +2387,6 @@ class Network:
 
             # traverse the length of the arc
             while totallength < length:
-
                 # once an arc can not be split further
                 if totallength + interval >= length:
                     # record the ending vertex
@@ -2431,7 +2409,7 @@ class Network:
                     new_vertex = (int_coord(newx), int_coord(newy))
 
                     # update the vertex and coordinate info if needed
-                    if new_vertex not in split_network.vertices.keys():
+                    if new_vertex not in split_network.vertices:
                         split_network.vertices[new_vertex] = currentstop
                         split_network.vertex_coords[currentstop] = new_vertex
                         split_network.vertex_list.append(currentstop)
@@ -2459,14 +2437,13 @@ class Network:
         split_network.arcs = set(split_network.arcs)
         split_network.arcs.update(new_arcs)
         split_network.arcs.difference_update(remove_arcs)
-        split_network.arcs = sorted(list(split_network.arcs))
+        split_network.arcs = sorted(split_network.arcs)
 
         # extract connected components
         if w_components:
-
             # extract contiguity weights from libpysal
             split_network.w_network = split_network.contiguityweights(
-                graph=False, from_split=True
+                graph=False, from_split=True, weights_kws=weights_kws
             )
             # identify connected components from the `w_network`
             split_network.identify_components(split_network.w_network, graph=False)
@@ -2477,7 +2454,7 @@ class Network:
 
         return split_network
 
-    def GlobalAutoK(
+    def GlobalAutoK(  # noqa N802
         self,
         pointpattern,
         nsteps=10,
@@ -2487,7 +2464,8 @@ class Network:
         upperbound=None,
     ):
         r"""Compute a global auto :math:`K`-function based on a network constrained
-        cost matrix through `Monte Carlo simulation <https://en.wikipedia.org/wiki/Monte_Carlo_method>`_
+        cost matrix through
+        `Monte Carlo simulation <https://en.wikipedia.org/wiki/Monte_Carlo_method>`_
         according to the formulation adapted from
         :cite:`doi:10.1002/9780470549094.ch5`. See the **Notes**
         section for further description.
@@ -2525,11 +2503,12 @@ class Network:
 
            \displaystyle K(r)=\frac{\sum^n_{i=1} \#[\hat{A} \in D(a_i, r)]}{n\lambda},
 
-        where $n$ is the set cardinality of :math:`A`, :math:`\hat{A}` is the subset of
-        observations in :math:`A` that are within :math:`D` units of distance from :math:`a_i`
-        (each single observation in :math:`A`), and :math:`r` is the range of distance
-        values over which the :math:`K`-function is calculated. The :math:`\lambda` term
-        is the intensity of observations along the network, calculated as:
+        where $n$ is the set cardinality of :math:`A`, :math:`\hat{A}` is the
+        subset of observations in :math:`A` that are within :math:`D` units of
+        distance from :math:`a_i` (each single observation in :math:`A`), and :math:`r`
+        is the range of distance values over which the :math:`K`-function is
+        calculated. The :math:`\lambda` term is the intensity of observations
+        along the network, calculated as:
 
         .. math::
 
@@ -2541,7 +2520,8 @@ class Network:
         distance buffers :math:`D \in r`. The :math:`K`-function improves upon
         nearest-neighbor distance measures through the analysis of all neighbor
         distances. For an explanation on how to interpret the results of the
-        :math:`K`-function see the `Network Spatial Dependence tutorial <https://pysal.org/spaghetti/notebooks/network-spatial-dependence.html>`_.
+        :math:`K`-function see the Network Spatial Dependence tutorial
+        `here <https://pysal.org/spaghetti/notebooks/network-spatial-dependence.html>`_.
 
         For original implementation see :cite:`Ripley1976`
         and :cite:`Ripley1977`.
@@ -2591,15 +2571,15 @@ class Network:
             upperbound=upperbound,
         )
 
-    def Moran(self, pp_name, permutations=999, graph=False):
+    def Moran(self, pp_name, permutations=999, graph=False):  # noqa N802
         """Calculate a Moran's *I* statistic on a set of observations
         based on network arcs. The Moran’s *I* test statistic allows
         for the inference of how clustered (or dispersed) a dataset is
         while considering both attribute values and spatial relationships.
         A value of closer to +1 indicates absolute clustering while a
         value of closer to -1 indicates absolute dispersion. Complete
-        spatial randomness takes the value of 0. See the
-        `esda documentation <https://pysal.org/esda/generated/esda.Moran.html#esda.Moran>`_
+        spatial randomness takes the value of 0. See the ``esda``
+        `documentation <https://pysal.org/esda/generated/esda.Moran.html#esda.Moran>`_
         for in-depth descriptions and tutorials.
 
         Parameters
@@ -2639,7 +2619,7 @@ class Network:
 
         >>> moran_res, _ = ntw.Moran(crimes)
         >>> round(moran_res.I, 6)
-        0.005193
+        np.float64(0.005193)
 
         Notes
         -----
@@ -2649,17 +2629,14 @@ class Network:
         """
 
         # set proper weights attribute
-        if graph:
-            w = self.w_graph
-        else:
-            w = self.w_network
+        w = self.w_graph if graph else self.w_network
 
         # Compute the counts
         pointpat = self.pointpatterns[pp_name]
         counts = self.count_per_link(pointpat.obs_to_arc, graph=graph)
 
         # Build the y vector
-        y = [counts[i] if i in counts else 0.0 for i in w.neighbors]
+        y = [counts.get(i, 0.0) for i in w.neighbors]
 
         # Moran's I
         moran = esda.moran.Moran(y, w, permutations=permutations)
@@ -2690,7 +2667,7 @@ class Network:
 
         """
 
-        with open(filename, "wb") as networkout:
+        with _open(filename, "wb") as networkout:
             pickle.dump(self, networkout, protocol=2)
 
     @staticmethod
@@ -2709,7 +2686,7 @@ class Network:
 
         """
 
-        with open(filename, "rb") as networkin:
+        with _open(filename, "rb") as networkin:
             self = pickle.load(networkin)
 
         return self
@@ -2750,7 +2727,11 @@ def extract_component(net, component_id, weightings=None):
     >>> from libpysal import examples
     >>> import spaghetti
     >>> snow_net = examples.get_path("Soho_Network.shp")
-    >>> ntw = spaghetti.Network(in_data=snow_net, extractgraph=False)
+    >>> ntw = spaghetti.Network(
+    ...     in_data=snow_net,
+    ...     extractgraph=False,
+    ...     weights_kws=dict(silence_warnings=True)
+    ... )
 
     The network is not fully connected.
 
@@ -2768,7 +2749,7 @@ def extract_component(net, component_id, weightings=None):
     >>> longest.network_n_components
     1
     >>> longest.network_component_lengths
-    {0: 13508.169276875526}
+    {np.int32(0): 13508.169276875526}
 
     """
 
@@ -2849,32 +2830,35 @@ def extract_component(net, component_id, weightings=None):
             supp_name = [o + attr for o in obj]
             supp_lens = [getattr(cnet, s) for s in supp_name]
             supp_link = [getattr(cnet, o + "s") for o in obj]
-            supp_ll = list(zip(supp_lens, supp_link))
+            supp_ll = list(zip(supp_lens, supp_link, strict=True))
             _val = [{k: v for k, v in l1.items() if k in l2} for l1, l2 in supp_ll]
             attr = supp_name
 
         # reassign attributes
-        for a, av in zip(attr, _val):
+        for a, av in zip(attr, _val, strict=True):
             setattr(cnet, a, av)
 
     # provide warning (for now) if the network contains a point pattern
     if getattr(net, "pointpatterns"):
-        msg = "There is a least one point pattern associated with the network."
-        msg += " Component extraction should be performed prior to snapping"
-        msg += " point patterns to the network object; failing to do so may"
-        msg += " lead to unexpected results."
-        warnings.warn(msg)
+        msg = (
+            "There is a least one point pattern associated with the network."
+            " Component extraction should be performed prior to snapping"
+            " point patterns to the network object; failing to do so may"
+            " lead to unexpected results."
+        )
+        warnings.warn(msg, stacklevel=2)
     # provide warning (for now) if the network contains a point pattern
     dm, nt = "distance_matrix", "network_trees"
     if hasattr(net, dm) or hasattr(net, nt):
-        msg = "Either one or both (%s, %s) attributes" % (dm, nt)
-        msg += " are present and will be deleted. These must be"
-        msg += " recalculated following component extraction."
-        warnings.warn(msg)
+        msg = (
+            f"Either one or both ({dm}, {nt}) attributes"
+            " are present and will be deleted. These must be"
+            " recalculated following component extraction."
+        )
+        warnings.warn(msg, stacklevel=2)
         for attr in [dm, nt]:
             if hasattr(net, attr):
-                _attr = getattr(net, attr)
-                del _attr
+                delattr(net, attr)
 
     # make initial copy of the network
     cnet = copy.deepcopy(net)
@@ -2998,12 +2982,11 @@ def spanning_tree(net, method="sort", maximum=False, silence_warnings=True):
 
     # if the network has no cycles, it is already a spanning tree
     if util.network_has_cycle(net.adjacencylist):
-
         if method.lower() == "sort":
             spanning_tree = mst_weighted_sort(net, maximum, net_kws)
         else:
-            msg = "'%s' not a valid method for minimum spanning tree creation"
-            raise ValueError(msg % method)
+            msg = f"'{method}' not a valid method for minimum spanning tree creation."
+            raise ValueError(msg)
 
         # instantiate the spanning tree as a network object
         net = Network(in_data=spanning_tree, weights_kws=weights_kws)
@@ -3061,7 +3044,6 @@ def mst_weighted_sort(net, maximum, net_kws):
     return spanning_tree
 
 
-@requires("geopandas", "shapely")
 def element_as_gdf(
     net,
     vertices=False,
@@ -3070,7 +3052,7 @@ def element_as_gdf(
     snapped=False,
     routes=None,
     id_col="id",
-    geom_col="geometry",
+    geom_col=None,
 ):
     """Return a ``geopandas.GeoDataFrame`` of network elements. This can be
     (a) the vertices of a network; (b) the arcs of a network; (c) both the
@@ -3099,8 +3081,9 @@ def element_as_gdf(
         ``geopandas.GeoDataFrame`` column name for IDs. Default is ``"id"``.
         When extracting routes this creates an (origin, destination) tuple.
     geom_col : str
-        ``geopandas.GeoDataFrame`` column name for geometry. Default is
-        ``"geometry"``.
+        Deprecated and will be removed in the minor release.
+        ``geopandas.GeoDataFrame`` column name for IDs. Default is ``"id"``.
+        When extracting routes this creates an (origin, destination) tuple.
 
     Raises
     ------
@@ -3135,7 +3118,6 @@ def element_as_gdf(
 
     When both network vertices and arcs are desired, the variable
     declaration must be in the order: <vertices>, <arcs>.
-    This function requires ``geopandas``.
 
     See also
     --------
@@ -3169,13 +3151,26 @@ def element_as_gdf(
     Calculate the total length of the network.
 
     >>> arcs_df.geometry.length.sum()
-    104414.09200823458
+    np.float64(104414.09200823458)
 
     """
 
+    # see GH#722
+    if geom_col:
+        dep_msg = (
+            "The ``geom_col`` keyword argument is deprecated and will "
+            "be dropped in the next minor release of pysal/spaghetti (1.8.0) "
+            "in favor of the default 'geometry' name. Users can rename "
+            "the geometry column following processing, if desired."
+        )
+        warnings.warn(dep_msg, FutureWarning, stacklevel=2)
+
     # shortest path routes between observations
     if routes:
-        paths = util._routes_as_gdf(routes, id_col, geom_col)
+        paths = util._routes_as_gdf(routes, id_col)
+        # see GH#722
+        if geom_col:
+            paths.rename_geometry(geom_col, inplace=True)
         return paths
 
     # need vertices place holder to create network segment LineStrings
@@ -3193,27 +3188,36 @@ def element_as_gdf(
             pp_name,
             snapped,
             id_col=id_col,
-            geom_col=geom_col,
         )
 
         # return points geodataframe if arcs not specified or
         # if extracting `PointPattern` points
         if not arcs or pp_name:
+            # see GH#722
+            if geom_col:
+                points.rename_geometry(geom_col, inplace=True)
             return points
 
     # arcs
-    arcs = util._arcs_as_gdf(net, points, id_col=id_col, geom_col=geom_col)
+    arcs = util._arcs_as_gdf(net, points, id_col=id_col)
 
     if vertices_for_arcs:
+        # see GH#722
+        if geom_col:
+            arcs.rename_geometry(geom_col, inplace=True)
         return arcs
 
     else:
+        # see GH#722
+        if geom_col:
+            points.rename_geometry(geom_col, inplace=True)
+            arcs.rename_geometry(geom_col, inplace=True)
         return points, arcs
 
 
 def regular_lattice(bounds, nh, nv=None, exterior=False):
-    """Generate a regular lattice of line segments
-    (`libpysal.cg.Chain objects <https://pysal.org/libpysal/generated/libpysal.cg.Chain.html#libpysal.cg.Chain>`_).
+    """Generate a regular lattice of line segments (``libpysal.cg.Chain``
+    `objects <https://pysal.org/libpysal/generated/libpysal.cg.Chain.html>`_).
 
     Parameters
     ----------
@@ -3268,21 +3272,23 @@ def regular_lattice(bounds, nh, nv=None, exterior=False):
 
     # check for bounds validity
     if len(bounds) != 4:
-        bounds_len = len(bounds)
-        msg = "The 'bounds' parameter is %s elements " % bounds_len
-        msg += "but should be exactly 4 - <minx,miny,maxx,maxy>."
-        raise RuntimeError(msg)
+        err_msg = (
+            f"The 'bounds' parameter is {len(bounds)} elements "
+            "but should be exactly 4 - <minx,miny,maxx,maxy>."
+        )
+        raise RuntimeError(err_msg)
 
     # check for bounds validity
     if not nv:
         nv = nh
     try:
         nh, nv = int(nh), int(nv)
-    except TypeError:
-        nlines_types = type(nh), type(nv)
-        msg = "The 'nh' and 'nv' parameters (%s, %s) " % nlines_types
-        msg += "could not be converted to integers."
-        raise TypeError(msg)
+    except TypeError as err:
+        err_msg = (
+            f"The 'nh' and 'nv' parameters ({type(nh)}, {type(nv)}) "
+            "could not be converted to integers."
+        )
+        raise TypeError(err_msg) from err
 
     # bounding box line lengths
     len_h, len_v = bounds[2] - bounds[0], bounds[3] - bounds[1]
@@ -3360,7 +3366,6 @@ class PointPattern:
     """
 
     def __init__(self, in_data=None, idvariable=None, attribute=False):
-
         # initialize points dictionary and counter
         self.points = {}
         self.npoints = 0
@@ -3373,7 +3378,7 @@ class PointPattern:
         is_libpysal_points = False
         supported_iterables = ["list", "tuple"]
         # type error message
-        msg = "'%s' not supported for point pattern instantiation."
+        msg = "'{}' not supported for point pattern instantiation."
 
         # set appropriate geometries
         if in_dtype == "str":
@@ -3383,14 +3388,14 @@ class PointPattern:
             if dtype == "libpysal.cg.shapes.Point":
                 is_libpysal_points = True
             else:
-                raise TypeError(msg % dtype)
+                raise TypeError(msg.format(dtype))
         elif in_dtype == "libpysal.cg.shapes.Point":
             in_data = [in_data]
             is_libpysal_points = True
         elif in_dtype == "geopandas.geodataframe.GeoDataFrame":
             from_shp = False
         else:
-            raise TypeError(msg % in_dtype)
+            raise TypeError(msg.format(str(in_dtype)))
 
         # either set native point ID from dataset or create new IDs
         if idvariable and not is_libpysal_points:
@@ -3401,7 +3406,7 @@ class PointPattern:
         # extract the point geometries
         if not is_libpysal_points:
             if from_shp:
-                pts = open(in_data)
+                pts = _open(in_data)
             else:
                 pts_objs = list(in_data.geometry)
                 pts = [cg.shapes.Point((p.x, p.y)) for p in pts_objs]
@@ -3410,11 +3415,10 @@ class PointPattern:
 
         # fetch attributes if requested
         if attribute and not is_libpysal_points:
-
             # open the database file if data is from shapefile
             if from_shp:
                 dbname = os.path.splitext(in_data)[0] + ".dbf"
-                db = open(dbname)
+                db = _open(dbname)
 
             # if data is from a GeoDataFrame, drop the geometry column
             # and declare attribute values as a list of lists
@@ -3426,7 +3430,6 @@ class PointPattern:
 
         # iterate over all points
         for i, pt in enumerate(pts):
-
             # IDs, attributes
             if ids and db is not None:
                 self.points[ids[i]] = {"coordinates": pt, "properties": db[i]}
@@ -3493,7 +3496,6 @@ class SimulatedPointPattern:
     """
 
     def __init__(self):
-
         # duplicate post-snapping PointPattern class structure
         self.npoints = 0
         self.obs_to_arc = {}
